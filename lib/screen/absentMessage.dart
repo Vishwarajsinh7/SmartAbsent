@@ -71,41 +71,52 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
   }
 
   // 2. FETCH DATA FROM FIREBASE
-  Future<void> _fetchData() async {
+Future<void> _fetchData() async {
+    setState(() => _isLoading = true);
+    
     try {
-      // A. Determine Today's Day
+      // 1. Get Today's Day
       DateTime now = DateTime.now();
-      // Simple way to get day name: Monday, Tuesday...
       List<String> weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
       _currentDay = weekDays[now.weekday - 1]; 
       
-      // B. Fetch Subjects for Today
+      // 2. Fetch Subjects ONLY for Today
+      // We added the filter back here:
       final subjectSnapshot = await FirebaseFirestore.instance
-          .collection('subject')
-          .where('day', isEqualTo: _currentDay)
-          .get(); // You might want to add .orderBy('timestamp') if you added that field
+          .collection('subject') 
+          .where('day', isEqualTo: _currentDay) 
+          .get();
 
       List<SubjectData> loadedSubjects = [];
       for (var doc in subjectSnapshot.docs) {
         final data = doc.data();
+        
+        // Safety checks (keep these to prevent crashes)
+        String subName = data['subjectName'] ?? 'Unknown';
+        String facName = data['facultyName'] ?? 'Unknown';
+        String time = data['timeSlot'] ?? 'No Time';
+
         loadedSubjects.add(SubjectData(
-          title: "${data['subjectName']} - ${data['facultyName']}",
-          time: data['timeSlot'],
+          title: "$subName - $facName",
+          time: time,
         ));
       }
 
-      // C. Fetch All Students (For Name Lookup)
+      // 3. Fetch All Students (For Name Lookup)
       final studentSnapshot = await FirebaseFirestore.instance.collection('student').get();
       Map<String, String> lookup = {};
       
       for (var doc in studentSnapshot.docs) {
         final data = doc.data();
-        String dept = data['department']; // "Computer" or "IT"
-        String roll = data['rollNo'];
-        String name = data['name'];
         
-        // Create a unique key for lookup: e.g., "Computer_1"
-        lookup['${dept}_${roll}'] = name;
+        String dept = data['department'] ?? "";
+        String roll = data['rollNo'] ?? "";
+        String name = data['name'] ?? "Unknown";
+        
+        // Only add to lookup if valid data exists
+        if (dept.isNotEmpty && roll.isNotEmpty) {
+           lookup['${dept}_${roll}'] = name;
+        }
       }
 
       if (mounted) {
@@ -117,8 +128,10 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
       }
 
     } catch (e) {
-      print("Error fetching data: $e");
-      if (mounted) setState(() => _isLoading = false);
+      print("ERROR: $e");
+      if(mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
