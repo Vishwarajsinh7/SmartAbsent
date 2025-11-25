@@ -1,28 +1,7 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:demo1/screen/sidebar.dart';
+import 'package:demo1/screen/todayreport.dart'; // Ensure this file exists
 import 'package:flutter/material.dart';
-import 'package:flutter_application_1/screen/sidebar.dart';
-import 'package:flutter_application_1/screen/todayreport.dart';
-
-void main() {
-  // The starting point of the app.
-  runApp(const ReportsApp());
-}
-
-class ReportsApp extends StatelessWidget {
-  const ReportsApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        // We use a light grey background for a softer look.
-        scaffoldBackgroundColor: const Color(0xFFF9FAFB),
-        fontFamily: 'Poppins',
-      ),
-      home: const ReportScreen(),
-    );
-  }
-}
 
 class ReportScreen extends StatefulWidget {
   const ReportScreen({super.key});
@@ -32,11 +11,80 @@ class ReportScreen extends StatefulWidget {
 }
 
 class _ReportScreenState extends State<ReportScreen> {
-  // This variable keeps track of the selected tab. 2 means "Reports".
+  // --- STATE VARIABLES ---
+  bool _isLoading = true;
+  String _todayAbsent = "0";
+  String _todayAttendancePercent = "0%";
+  List<Map<String, Object>> _todayLectures = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchReportData();
+  }
+
+  // --- FETCH DATA FROM FIREBASE ---
+  Future<void> _fetchReportData() async {
+    setState(() => _isLoading = true);
+    try {
+      DateTime now = DateTime.now();
+      // Format: dd-MM-yyyy (Must match how you saved it)
+      String dateStr = "${now.day.toString().padLeft(2, '0')}-${now.month.toString().padLeft(2, '0')}-${now.year}";
+
+      // 1. Query Attendance Logs for TODAY
+      final snapshot = await FirebaseFirestore.instance
+          .collection('attendance_logs')
+          .where('date', isEqualTo: dateStr)
+          .get();
+
+      int totalStudentsForDay = 0;
+      int totalAbsentForDay = 0;
+      List<Map<String, Object>> lectures = [];
+
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        
+        // Get totals for this specific lecture
+        int totalStudents = (data['totalCeStudents'] ?? 0) + (data['totalItStudents'] ?? 0);
+        List ceAbs = data['ceAbsentees'] ?? [];
+        List itAbs = data['itAbsentees'] ?? [];
+        int absentCount = ceAbs.length + itAbs.length;
+        int presentCount = totalStudents - absentCount;
+
+        // Calculate Lecture Percentage
+        int lecturePercent = totalStudents == 0 ? 0 : ((presentCount / totalStudents) * 100).round();
+
+        // Add to Day Totals
+        totalStudentsForDay += totalStudents;
+        totalAbsentForDay += absentCount;
+
+        // Add to Breakdown List
+        lectures.add({
+          'time': "${data['subjectName']} (${data['timeSlot']})",
+          'percent': "$lecturePercent%",
+          'color': lecturePercent < 75 ? Colors.red : Colors.green, // Red if low attendance
+        });
+      }
+
+      // Calculate Overall Day Percentage
+      int dayPercent = totalStudentsForDay == 0 ? 0 : (((totalStudentsForDay - totalAbsentForDay) / totalStudentsForDay) * 100).round();
+
+      if (mounted) {
+        setState(() {
+          _todayAbsent = totalAbsentForDay.toString();
+          _todayAttendancePercent = "$dayPercent%";
+          _todayLectures = lectures;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print("Error fetching reports: $e");
+      if(mounted) setState(() => _isLoading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    // Scaffold is a basic page layout structure.
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.white,
@@ -45,49 +93,43 @@ class _ReportScreenState extends State<ReportScreen> {
           'Report',
           style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
         ),
+        iconTheme: const IconThemeData(color: Colors.black),
       ),
-      drawer: const Drawer(child: Sidebar()),
-      // SingleChildScrollView allows the content to be scrolled if it's too long for the screen.
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        // A Column arranges its children vertically.
-        child: Column(
-          children: [
-            // We call our custom ReportCard widget for "Today's Report".
-            ReportCard(
-              title: 'Today Attendance Reports',
-              absentValue: '12',
-              attendanceValue: '85%',
-              // We also pass the lecture breakdown data.
-              lectureSlots: const [
-                {
-                  'time': 'Slot 1 (8:00-8:55)',
-                  'percent': '88%',
-                  'color': Colors.green,
-                },
-                {
-                  'time': 'Slot 2 (10:00-11:40)',
-                  'percent': '75%',
-                  'color': Colors.orange,
-                },
-                {
-                  'time': 'Slot 3 (12:30-2:10)',
-                  'percent': '65%',
-                  'color': Colors.red,
-                },
+      drawer: const Drawer(
+        child: Sidebar(),
+      ),
+      body: _isLoading 
+        ? const Center(child: CircularProgressIndicator())
+        : SingleChildScrollView(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              children: [
+                // --- TODAY'S REPORT (Dynamic) ---
+                ReportCard(
+                  title: 'Today Attendance Reports',
+                  absentValue: _todayAbsent,
+                  attendanceValue: _todayAttendancePercent,
+                  lectureSlots: _todayLectures,
+                  onDetailPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const Todayreport()),
+                    );
+                  },
+                ),
+                
+                const SizedBox(height: 20),
+
+                // --- TOMORROW'S REPORT (Static/Placeholder) ---
+                const ReportCard(
+                  title: 'Tomorrow Report',
+                  absentValue: '-', 
+                  attendanceValue: '-',
+                  // lectureSlots is null, so it won't show the breakdown
+                ),
               ],
             ),
-            const SizedBox(height: 20), // Adds space between the cards.
-            // We reuse the same ReportCard widget for "Tomorrow's Report".
-            const ReportCard(
-              title: 'Tomorrow Report',
-              absentValue: '10',
-              attendanceValue: '88%',
-              // No lecture data for tomorrow, so we don't pass it.
-            ),
-          ],
-        ),
-      ),
+          ),
     );
   }
 }
@@ -97,19 +139,20 @@ class ReportCard extends StatelessWidget {
   final String title;
   final String absentValue;
   final String attendanceValue;
-  final List<Map<String, Object>>? lectureSlots; // This is optional
+  final List<Map<String, Object>>? lectureSlots;
+  final VoidCallback? onDetailPressed; // Added callback for button
 
   const ReportCard({
     super.key,
     required this.title,
     required this.absentValue,
     required this.attendanceValue,
-    this.lectureSlots, // It can be null
+    this.lectureSlots,
+    this.onDetailPressed,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Card provides a nice container with a shadow.
     return Card(
       color: Colors.white,
       elevation: 2.0,
@@ -126,19 +169,15 @@ class ReportCard extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text(
                   title,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
             const SizedBox(height: 16),
 
-            // Summary Boxes (Absent / Attendance %)
+            // Summary Boxes
             Row(
               children: [
-                // Expanded makes each child take up equal space.
                 Expanded(
                   child: SummaryBox(
                     label: 'Absent Today',
@@ -160,53 +199,39 @@ class ReportCard extends StatelessWidget {
             ),
             const SizedBox(height: 16),
 
-            // This condition checks if there is lecture data to show.
-            if (lectureSlots != null)
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Lecture-wise Breakdown',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  // We loop through the list of slots and create a row for each one.
-                  for (var slot in lectureSlots!)
-                    LectureSlotRow(
-                      time: slot['time'] as String,
-                      percent: slot['percent'] as String,
-                      percentColor: slot['color'] as Color,
-                    ),
-                ],
+            // Lecture Breakdown
+            if (lectureSlots != null && lectureSlots!.isNotEmpty) ...[
+              const Text(
+                'Lecture-wise Breakdown',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
+              const SizedBox(height: 8),
+              for (var slot in lectureSlots!)
+                LectureSlotRow(
+                  time: slot['time'] as String,
+                  percent: slot['percent'] as String,
+                  percentColor: slot['color'] as Color,
+                ),
+            ] else if (lectureSlots != null && lectureSlots!.isEmpty) ...[
+               const Text("No lectures recorded yet.", style: TextStyle(color: Colors.grey)),
+            ],
 
             const SizedBox(height: 20),
 
             // "View Detailed Report" Button
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const Todayreport(),
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF2563EB), // Blue color
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
+            if (onDetailPressed != null)
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: onDetailPressed,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2563EB),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
-                ),
-                child: const Text(
-                  'View Detailed Report',
-                  style: TextStyle(color: Colors.white),
+                  child: const Text('View Detailed Report', style: TextStyle(color: Colors.white)),
                 ),
               ),
-            ),
           ],
         ),
       ),
@@ -240,19 +265,9 @@ class SummaryBox extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: TextStyle(color: valueColor, fontWeight: FontWeight.w500),
-          ),
+          Text(label, style: TextStyle(color: valueColor, fontWeight: FontWeight.w500)),
           const SizedBox(height: 4),
-          Text(
-            value,
-            style: TextStyle(
-              color: valueColor,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          Text(value, style: TextStyle(color: valueColor, fontSize: 24, fontWeight: FontWeight.bold)),
         ],
       ),
     );
@@ -278,16 +293,11 @@ class LectureSlotRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Row(
         children: [
-          Text(time, style: const TextStyle(fontSize: 14)),
-          const Spacer(), // Spacer pushes the next widget to the end.
-          Text(
-            percent,
-            style: TextStyle(
-              fontSize: 14,
-              color: percentColor,
-              fontWeight: FontWeight.bold,
-            ),
+          Expanded(
+            child: Text(time, style: const TextStyle(fontSize: 14), overflow: TextOverflow.ellipsis),
           ),
+          const SizedBox(width: 8),
+          Text(percent, style: TextStyle(fontSize: 14, color: percentColor, fontWeight: FontWeight.bold)),
         ],
       ),
     );
