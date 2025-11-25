@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:demo1/screen/sidebar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:intl/intl.dart'; // Add intl package to pubspec.yaml if needed for simple date formatting
+import 'package:intl/intl.dart'; 
 
 void main() {
   runApp(const AttendanceApp());
@@ -14,8 +14,12 @@ class SubjectData {
   String time;
   TextEditingController ceController = TextEditingController();
   TextEditingController itController = TextEditingController();
-  bool includeCE = true;
-  bool includeIT = true;
+  
+  // Logic Update:
+  // true = "Direct Mode" (Typed numbers are ABSENT)
+  // false = "Inverse Mode" (Typed numbers are PRESENT, calculate the rest)
+  bool ceDirectMode = true; 
+  bool itDirectMode = true;
 
   SubjectData({required this.title, required this.time});
 }
@@ -58,9 +62,13 @@ class AbsenceMessageGeneratorScreen extends StatefulWidget {
 class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorScreen> {
   final TextEditingController _outputController = TextEditingController();
   
-  // State variables
   List<SubjectData> _subjects = [];
-  Map<String, String> _studentLookup = {}; // Key: "Dept_Roll", Value: "Name"
+  Map<String, String> _studentLookup = {}; 
+  
+  // NEW: Store all roll numbers to calculate inverse logic
+  List<String> _allCERollNos = []; 
+  List<String> _allITRollNos = [];
+
   bool _isLoading = true;
   String _currentDay = '';
 
@@ -70,18 +78,15 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
     _fetchData();
   }
 
-  // 2. FETCH DATA FROM FIREBASE
-Future<void> _fetchData() async {
+  Future<void> _fetchData() async {
     setState(() => _isLoading = true);
     
     try {
-      // 1. Get Today's Day
       DateTime now = DateTime.now();
       List<String> weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
       _currentDay = weekDays[now.weekday - 1]; 
       
-      // 2. Fetch Subjects ONLY for Today
-      // We added the filter back here:
+      // 1. Fetch Subjects
       final subjectSnapshot = await FirebaseFirestore.instance
           .collection('subject') 
           .where('day', isEqualTo: _currentDay) 
@@ -90,8 +95,6 @@ Future<void> _fetchData() async {
       List<SubjectData> loadedSubjects = [];
       for (var doc in subjectSnapshot.docs) {
         final data = doc.data();
-        
-        // Safety checks (keep these to prevent crashes)
         String subName = data['subjectName'] ?? 'Unknown';
         String facName = data['facultyName'] ?? 'Unknown';
         String time = data['timeSlot'] ?? 'No Time';
@@ -102,9 +105,11 @@ Future<void> _fetchData() async {
         ));
       }
 
-      // 3. Fetch All Students (For Name Lookup)
+      // 2. Fetch Students & Populate Master Lists
       final studentSnapshot = await FirebaseFirestore.instance.collection('student').get();
       Map<String, String> lookup = {};
+      List<String> ceRolls = [];
+      List<String> itRolls = [];
       
       for (var doc in studentSnapshot.docs) {
         final data = doc.data();
@@ -113,36 +118,41 @@ Future<void> _fetchData() async {
         String roll = data['rollNo'] ?? "";
         String name = data['name'] ?? "Unknown";
         
-        // Only add to lookup if valid data exists
         if (dept.isNotEmpty && roll.isNotEmpty) {
            lookup['${dept}_${roll}'] = name;
+
+           // Add to master lists for inverse calculation
+           if (dept == "Computer") ceRolls.add(roll);
+           if (dept == "IT") itRolls.add(roll);
         }
       }
+
+      // Sort the lists numerically for better output
+      ceRolls.sort((a, b) => int.tryParse(a)!.compareTo(int.tryParse(b)!));
+      itRolls.sort((a, b) => int.tryParse(a)!.compareTo(int.tryParse(b)!));
 
       if (mounted) {
         setState(() {
           _subjects = loadedSubjects;
           _studentLookup = lookup;
+          _allCERollNos = ceRolls;
+          _allITRollNos = itRolls;
           _isLoading = false;
         });
       }
 
     } catch (e) {
       print("ERROR: $e");
-      if(mounted) {
-        setState(() => _isLoading = false);
-      }
+      if(mounted) setState(() => _isLoading = false);
     }
   }
 
-  // 3. GENERATE MESSAGE LOGIC
   void _generateMessage() {
     DateTime now = DateTime.now();
     String dateStr = "${now.day.toString().padLeft(2, '0')}-${now.month.toString().padLeft(2, '0')}-${now.year}";
 
     StringBuffer buffer = StringBuffer();
 
-    // Header
     buffer.writeln("આજે $dateStr ($_currentDay) ના રોજ ગેરહાજર રહેલા વિદ્યાર્થીઓની યાદી નીચે મુજબ છે");
     buffer.writeln("Following is the list of students who remained absent today $dateStr ($_currentDay)\n");
 
@@ -151,47 +161,26 @@ Future<void> _fetchData() async {
     }
 
     for (var subject in _subjects) {
-      if (!subject.includeCE && !subject.includeIT) continue;
-
       buffer.writeln("${subject.title} (${subject.time})\n");
 
-      // Helper function to process comma-separated roll numbers
-      String processAbsentees(String input, String deptKey) {
-        if (input.trim().isEmpty) return "None";
-        
-        List<String> rolls = input.split(',');
-        List<String> formattedNames = [];
+      // --- CE Logic ---
+      buffer.writeln("CE Absentees :");
+      List<String> ceAbsentees = _calculateAbsentees(
+        subject.ceController.text, 
+        subject.ceDirectMode, 
+        _allCERollNos
+      );
+      buffer.writeln(_formatOutput(ceAbsentees, "CE"));
+      buffer.writeln(); 
 
-        for (var roll in rolls) {
-          String cleanRoll = roll.trim();
-          if (cleanRoll.isEmpty) continue;
-
-          // Lookup Name using our Map
-          // Note: In DB you saved "Computer" but UI might mean "CE". Map accordingly.
-          String dbDept = deptKey == "CE" ? "Computer" : "IT"; 
-          String key = "${dbDept}_${cleanRoll}";
-          
-          String name = _studentLookup[key] ?? ""; // Empty string if name not found
-          
-          if (name.isNotEmpty) {
-            formattedNames.add("$cleanRoll - $name");
-          } else {
-            formattedNames.add(cleanRoll); // Just number if name not found
-          }
-        }
-        return formattedNames.join('\n');
-      }
-
-      if (subject.includeCE) {
-        buffer.writeln("CE Absentees :");
-        buffer.writeln(processAbsentees(subject.ceController.text, "CE"));
-        buffer.writeln(); 
-      }
-
-      if (subject.includeIT) {
-        buffer.writeln("IT Absentees :");
-        buffer.writeln(processAbsentees(subject.itController.text, "IT"));
-      }
+      // --- IT Logic ---
+      buffer.writeln("IT Absentees :");
+      List<String> itAbsentees = _calculateAbsentees(
+        subject.itController.text, 
+        subject.itDirectMode, 
+        _allITRollNos
+      );
+      buffer.writeln(_formatOutput(itAbsentees, "IT"));
 
       buffer.writeln("\n------------------------\n");
     }
@@ -199,6 +188,48 @@ Future<void> _fetchData() async {
     setState(() {
       _outputController.text = buffer.toString();
     });
+  }
+
+  // CORE LOGIC: Determines who is absent based on Checkbox state
+  List<String> _calculateAbsentees(String input, bool isDirectMode, List<String> allStudents) {
+    if (input.trim().isEmpty) return []; // No input means None
+
+    List<String> typedRolls = input.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+
+    if (isDirectMode) {
+      // Checked: Typed numbers ARE the absentees
+      return typedRolls;
+    } else {
+      // Unchecked: Typed numbers are PRESENT. We need to find who is NOT in this list.
+      // Logic: Total Students - Present Students = Absent Students
+      List<String> actualAbsentees = [];
+      for (var roll in allStudents) {
+        if (!typedRolls.contains(roll)) {
+          actualAbsentees.add(roll);
+        }
+      }
+      return actualAbsentees;
+    }
+  }
+
+  // HELPER: Adds Names to the Roll numbers
+  String _formatOutput(List<String> rollList, String deptKey) {
+    if (rollList.isEmpty) return "None";
+
+    List<String> formattedNames = [];
+    String dbDept = deptKey == "CE" ? "Computer" : "IT";
+
+    for (var roll in rollList) {
+      String key = "${dbDept}_${roll}";
+      String name = _studentLookup[key] ?? "";
+      
+      if (name.isNotEmpty) {
+        formattedNames.add("$roll - $name");
+      } else {
+        formattedNames.add(roll);
+      }
+    }
+    return formattedNames.join('\n');
   }
 
   void _copyToClipboard() {
@@ -302,8 +333,19 @@ class SubjectCard extends StatelessWidget {
           children: [
             Text('${data.title} (${data.time})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
             const SizedBox(height: 8),
-            DepartmentRow(name: 'CE', controller: data.ceController, isChecked: data.includeCE, onCheckChanged: (v) => data.includeCE = v),
-            DepartmentRow(name: 'IT', controller: data.itController, isChecked: data.includeIT, onCheckChanged: (v) => data.includeIT = v),
+            
+            DepartmentRow(
+              name: 'CE', 
+              controller: data.ceController, 
+              isDirectMode: data.ceDirectMode, 
+              onModeChanged: (v) => data.ceDirectMode = v
+            ),
+            DepartmentRow(
+              name: 'IT', 
+              controller: data.itController, 
+              isDirectMode: data.itDirectMode, 
+              onModeChanged: (v) => data.itDirectMode = v
+            ),
           ],
         ),
       ),
@@ -314,26 +356,27 @@ class SubjectCard extends StatelessWidget {
 class DepartmentRow extends StatefulWidget {
   final String name;
   final TextEditingController controller;
-  final bool isChecked;
-  final Function(bool) onCheckChanged;
+  final bool isDirectMode;
+  final Function(bool) onModeChanged;
 
-  const DepartmentRow({super.key, required this.name, required this.controller, required this.isChecked, required this.onCheckChanged});
+  const DepartmentRow({super.key, required this.name, required this.controller, required this.isDirectMode, required this.onModeChanged});
 
   @override
   State<DepartmentRow> createState() => _DepartmentRowState();
 }
 
 class _DepartmentRowState extends State<DepartmentRow> {
-  late bool _localIsChecked;
+  late bool _localIsDirect;
 
   @override
   void initState() {
     super.initState();
-    _localIsChecked = widget.isChecked;
+    _localIsDirect = widget.isDirectMode;
   }
 
   @override
   Widget build(BuildContext context) {
+    // 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Row(
@@ -343,17 +386,32 @@ class _DepartmentRowState extends State<DepartmentRow> {
           Expanded(
             child: TextField(
               controller: widget.controller,
-              enabled: _localIsChecked,
-              decoration: const InputDecoration(hintText: 'Roll Nos (e.g. 1, 5)', isDense: true),
-              keyboardType: TextInputType.number, // Optimized for number entry
+              // ENABLED ALWAYS now, because we type numbers in both cases
+              enabled: true, 
+              decoration: InputDecoration(
+                // Hint changes based on mode
+                hintText: _localIsDirect ? 'Enter Absent Rolls' : 'Enter Present Rolls',
+                hintStyle: TextStyle(
+                  color: _localIsDirect ? Colors.grey : Colors.orange.shade700,
+                  fontSize: 13
+                ),
+                isDense: true,
+              ),
+              keyboardType: TextInputType.number, 
             ),
           ),
-          Checkbox(
-            value: _localIsChecked,
-            onChanged: (value) {
-              setState(() => _localIsChecked = value ?? false);
-              widget.onCheckChanged(_localIsChecked);
-            },
+          Tooltip(
+            message: _localIsDirect ? "Tick: Entering Absentees" : "Untick: Entering Present (Calc Inverse)",
+            child: Checkbox(
+              value: _localIsDirect,
+              activeColor: Colors.blue, // Blue = Standard Mode
+              side: _localIsDirect ? null : const BorderSide(color: Colors.orange, width: 2), // Orange border = Inverse Mode
+              onChanged: (value) {
+                setState(() => _localIsDirect = value ?? true);
+                widget.onModeChanged(_localIsDirect);
+                // We do NOT clear text here, because user might want to toggle logic on existing numbers
+              },
+            ),
           ),
         ],
       ),
