@@ -8,14 +8,14 @@ void main() {
   runApp(const AttendanceApp());
 }
 
-// 1. DATA MODEL
+// --- 1. DATA MODEL ---
 class SubjectData {
   String title;
   String time;
   TextEditingController ceController = TextEditingController();
   TextEditingController itController = TextEditingController();
   
-  // Logic Update:
+  // Logic: 
   // true = "Direct Mode" (Typed numbers are ABSENT)
   // false = "Inverse Mode" (Typed numbers are PRESENT, calculate the rest)
   bool ceDirectMode = true; 
@@ -62,10 +62,11 @@ class AbsenceMessageGeneratorScreen extends StatefulWidget {
 class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorScreen> {
   final TextEditingController _outputController = TextEditingController();
   
+  // State variables
   List<SubjectData> _subjects = [];
   Map<String, String> _studentLookup = {}; 
   
-  // NEW: Store all roll numbers to calculate inverse logic
+  // Store all roll numbers to calculate inverse logic (Present -> Absent)
   List<String> _allCERollNos = []; 
   List<String> _allITRollNos = [];
 
@@ -78,6 +79,7 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
     _fetchData();
   }
 
+  // --- 2. FETCH DATA ---
   Future<void> _fetchData() async {
     setState(() => _isLoading = true);
     
@@ -86,7 +88,7 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
       List<String> weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
       _currentDay = weekDays[now.weekday - 1]; 
       
-      // 1. Fetch Subjects
+      // A. Fetch Subjects for Today
       final subjectSnapshot = await FirebaseFirestore.instance
           .collection('subject') 
           .where('day', isEqualTo: _currentDay) 
@@ -105,7 +107,7 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
         ));
       }
 
-      // 2. Fetch Students & Populate Master Lists
+      // B. Fetch Students & Populate Master Lists
       final studentSnapshot = await FirebaseFirestore.instance.collection('student').get();
       Map<String, String> lookup = {};
       List<String> ceRolls = [];
@@ -127,7 +129,7 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
         }
       }
 
-      // Sort the lists numerically for better output
+      // Sort the lists numerically
       ceRolls.sort((a, b) => int.tryParse(a)!.compareTo(int.tryParse(b)!));
       itRolls.sort((a, b) => int.tryParse(a)!.compareTo(int.tryParse(b)!));
 
@@ -147,6 +149,70 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
     }
   }
 
+  // --- 3. SAVE TO DATABASE ---
+  Future<void> _saveAttendanceToFirebase() async {
+    setState(() => _isLoading = true);
+    DateTime now = DateTime.now();
+    String dateStr = "${now.day.toString().padLeft(2, '0')}-${now.month.toString().padLeft(2, '0')}-${now.year}";
+
+    WriteBatch batch = FirebaseFirestore.instance.batch();
+
+    try {
+      for (var subject in _subjects) {
+        
+        // 1. Calculate the final list of absentees using the logic
+        List<String> finalCeAbsentees = _calculateAbsentees(
+            subject.ceController.text, subject.ceDirectMode, _allCERollNos);
+        
+        List<String> finalItAbsentees = _calculateAbsentees(
+            subject.itController.text, subject.itDirectMode, _allITRollNos);
+
+        // 2. Create a reference for a new document in 'attendance_logs'
+        DocumentReference docRef = FirebaseFirestore.instance.collection('attendance_logs').doc();
+
+        // 3. Prepare the data
+        Map<String, dynamic> logData = {
+          'date': dateStr,
+          'timestamp': FieldValue.serverTimestamp(),
+          'day': _currentDay,
+          'subjectName': subject.title, 
+          'timeSlot': subject.time,     
+          
+          'ceAbsentees': finalCeAbsentees,
+          'itAbsentees': finalItAbsentees,
+          
+          // Saving totals is useful for calculating % later
+          'totalCeStudents': _allCERollNos.length, 
+          'totalItStudents': _allITRollNos.length,
+        };
+
+        batch.set(docRef, logData);
+      }
+
+      // 4. Commit all changes
+      await batch.commit();
+
+      // 5. Also Generate Message on screen
+      _generateMessage();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Attendance Saved Successfully!')),
+        );
+      }
+    } catch (e) {
+      print("Error saving attendance: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error saving: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // --- 4. GENERATE MESSAGE ---
   void _generateMessage() {
     DateTime now = DateTime.now();
     String dateStr = "${now.day.toString().padLeft(2, '0')}-${now.month.toString().padLeft(2, '0')}-${now.year}";
@@ -190,7 +256,9 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
     });
   }
 
-  // CORE LOGIC: Determines who is absent based on Checkbox state
+  // --- HELPER LOGIC ---
+  
+  // Determines who is absent based on Checkbox state
   List<String> _calculateAbsentees(String input, bool isDirectMode, List<String> allStudents) {
     if (input.trim().isEmpty) return []; // No input means None
 
@@ -201,7 +269,6 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
       return typedRolls;
     } else {
       // Unchecked: Typed numbers are PRESENT. We need to find who is NOT in this list.
-      // Logic: Total Students - Present Students = Absent Students
       List<String> actualAbsentees = [];
       for (var roll in allStudents) {
         if (!typedRolls.contains(roll)) {
@@ -212,9 +279,16 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
     }
   }
 
-  // HELPER: Adds Names to the Roll numbers
+  // Adds Names to the Roll numbers for display
   String _formatOutput(List<String> rollList, String deptKey) {
     if (rollList.isEmpty) return "None";
+
+    // Sort for nice display
+    try {
+      rollList.sort((a, b) => int.parse(a).compareTo(int.parse(b)));
+    } catch (e) {
+      // Ignore sort error if non-numbers are typed
+    }
 
     List<String> formattedNames = [];
     String dbDept = deptKey == "CE" ? "Computer" : "IT";
@@ -286,17 +360,14 @@ class _AbsenceMessageGeneratorScreenState extends State<AbsenceMessageGeneratorS
                 Row(
                   children: [
                     Expanded(
-                      flex: 3,
-                      child: ElevatedButton(
-                        onPressed: _generateMessage,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF2563EB),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        flex: 2,
+                        child: OutlinedButton(
+                          onPressed: _saveAttendanceToFirebase, 
+                          style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12)),
+                          child: const Text('Save & Generate'),
                         ),
-                        child: const Text('Generate'),
                       ),
-                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       flex: 2,
@@ -376,7 +447,6 @@ class _DepartmentRowState extends State<DepartmentRow> {
 
   @override
   Widget build(BuildContext context) {
-    // 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Row(
@@ -386,10 +456,8 @@ class _DepartmentRowState extends State<DepartmentRow> {
           Expanded(
             child: TextField(
               controller: widget.controller,
-              // ENABLED ALWAYS now, because we type numbers in both cases
               enabled: true, 
               decoration: InputDecoration(
-                // Hint changes based on mode
                 hintText: _localIsDirect ? 'Enter Absent Rolls' : 'Enter Present Rolls',
                 hintStyle: TextStyle(
                   color: _localIsDirect ? Colors.grey : Colors.orange.shade700,
@@ -404,12 +472,11 @@ class _DepartmentRowState extends State<DepartmentRow> {
             message: _localIsDirect ? "Tick: Entering Absentees" : "Untick: Entering Present (Calc Inverse)",
             child: Checkbox(
               value: _localIsDirect,
-              activeColor: Colors.blue, // Blue = Standard Mode
-              side: _localIsDirect ? null : const BorderSide(color: Colors.orange, width: 2), // Orange border = Inverse Mode
+              activeColor: Colors.blue, 
+              side: _localIsDirect ? null : const BorderSide(color: Colors.orange, width: 2), 
               onChanged: (value) {
                 setState(() => _localIsDirect = value ?? true);
                 widget.onModeChanged(_localIsDirect);
-                // We do NOT clear text here, because user might want to toggle logic on existing numbers
               },
             ),
           ),
