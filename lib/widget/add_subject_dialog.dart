@@ -1,10 +1,16 @@
-// In a new file: lib/add_subject_dialog.dart
-
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_application_1/data/timetable_model.dart';
 
 class AddSubjectDialog extends StatefulWidget {
-  const AddSubjectDialog({super.key});
+  // We add these two variables so the screen can pass data to the dialog
+  final String? docId;
+  final Map<String, dynamic>? subjectToEdit;
+
+  const AddSubjectDialog({
+    super.key,
+    this.docId,
+    this.subjectToEdit,
+  });
 
   @override
   State<AddSubjectDialog> createState() => _AddSubjectDialogState();
@@ -12,29 +18,82 @@ class AddSubjectDialog extends StatefulWidget {
 
 class _AddSubjectDialogState extends State<AddSubjectDialog> {
   final _subjectNameController = TextEditingController();
+  final _facultyNameController = TextEditingController(); 
+  
   String? _selectedDay;
   String? _selectedTimeSlot;
-  String? _selectedFaculty;
+  bool _isLoading = false; 
 
-  // Sample data for our dropdowns
-  final List<String> _days = [
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-    'Friday',
-  ];
-  final List<String> _timeSlots = [
-    '8:00 - 9:45',
-    '10:00 - 11:40',
-    '1:20 - 2:10',
-  ];
-  final List<String> _faculties = ['VD', 'OS', 'SJ', 'MS', 'Krishnamurti'];
+  final List<String> _days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  final List<String> _timeSlots = ['8:00 - 8:55', '8:55 - 9:45', '10:00 - 10:50', '10:50 - 11:40', '12:30 - 1:20', '1:20 - 2:10'];
+
+  @override
+  void initState() {
+    super.initState();
+    // Check if we are in "Edit Mode"
+    if (widget.subjectToEdit != null) {
+      // Pre-fill the form with existing data
+      _subjectNameController.text = widget.subjectToEdit!['subjectName'] ?? '';
+      _facultyNameController.text = widget.subjectToEdit!['facultyName'] ?? '';
+      _selectedDay = widget.subjectToEdit!['day'];
+      _selectedTimeSlot = widget.subjectToEdit!['timeSlot'];
+    }
+  }
+
+  @override
+  void dispose() {
+    _subjectNameController.dispose();
+    _facultyNameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveToFirebase() async {
+    if (_subjectNameController.text.isEmpty ||
+        _facultyNameController.text.isEmpty || 
+        _selectedDay == null ||
+        _selectedTimeSlot == null) {
+        return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final data = {
+        'subjectName': _subjectNameController.text.trim(),
+        'day': _selectedDay,
+        'timeSlot': _selectedTimeSlot,
+        'facultyName': _facultyNameController.text.trim(),
+        'timestamp': FieldValue.serverTimestamp(),
+      };
+
+      if (widget.docId == null) {
+        // Create NEW document
+        await FirebaseFirestore.instance.collection('subject').add(data);
+      } else {
+        // Update EXISTING document
+        await FirebaseFirestore.instance.collection('subject').doc(widget.docId).update(data);
+      }
+
+      if (mounted) {
+        Navigator.of(context).pop(); 
+      }
+    } catch (e) {
+      print("Error uploading: $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Add New Subject'),
+      title: Text(widget.docId == null ? 'Add New Subject' : 'Edit Subject'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -42,67 +101,54 @@ class _AddSubjectDialogState extends State<AddSubjectDialog> {
             TextField(
               controller: _subjectNameController,
               decoration: const InputDecoration(
-                hintText: 'Subject Name (e.g., CCT)',
+                labelText: 'Subject Name',
+                hintText: 'e.g., CCT',
+                border: OutlineInputBorder(),
               ),
+              textCapitalization: TextCapitalization.characters,
             ),
             const SizedBox(height: 16),
+
+            TextField(
+              controller: _facultyNameController,
+              decoration: const InputDecoration(
+                labelText: 'Faculty Name',
+                hintText: 'e.g., Arzoo Sir',
+                border: OutlineInputBorder(),
+              ),
+              textCapitalization: TextCapitalization.words,
+            ),
+            const SizedBox(height: 16),
+
             DropdownButtonFormField<String>(
               value: _selectedDay,
-              hint: const Text('Day'),
-              items: _days
-                  .map((day) => DropdownMenuItem(value: day, child: Text(day)))
-                  .toList(),
+              hint: const Text('Select Day'),
+              items: _days.map((day) => DropdownMenuItem(value: day, child: Text(day))).toList(),
               onChanged: (value) => setState(() => _selectedDay = value),
+              decoration: const InputDecoration(border: OutlineInputBorder()),
             ),
             const SizedBox(height: 16),
+
             DropdownButtonFormField<String>(
               value: _selectedTimeSlot,
               hint: const Text('Select Time Slot'),
-              items: _timeSlots
-                  .map(
-                    (slot) => DropdownMenuItem(value: slot, child: Text(slot)),
-                  )
-                  .toList(),
+              items: _timeSlots.map((slot) => DropdownMenuItem(value: slot, child: Text(slot))).toList(),
               onChanged: (value) => setState(() => _selectedTimeSlot = value),
-            ),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              value: _selectedFaculty,
-              hint: const Text('Select Faculty'),
-              items: _faculties
-                  .map(
-                    (faculty) =>
-                        DropdownMenuItem(value: faculty, child: Text(faculty)),
-                  )
-                  .toList(),
-              onChanged: (value) => setState(() => _selectedFaculty = value),
+              decoration: const InputDecoration(border: OutlineInputBorder()),
             ),
           ],
         ),
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          onPressed: () => Navigator.of(context).pop(), 
+          child: const Text('Cancel')
         ),
         ElevatedButton(
-          onPressed: () {
-            // Check if all fields are filled
-            if (_subjectNameController.text.isNotEmpty &&
-                _selectedDay != null &&
-                _selectedTimeSlot != null &&
-                _selectedFaculty != null) {
-              final newEntry = TimetableEntry(
-                subjectName: _subjectNameController.text,
-                day: _selectedDay!,
-                timeSlot: _selectedTimeSlot!,
-                faculty: _selectedFaculty!,
-              );
-              // Send the new entry back to the main screen
-              Navigator.of(context).pop(newEntry);
-            }
-          },
-          child: const Text('Add Subject'),
+          onPressed: _isLoading ? null : _saveToFirebase,
+          child: _isLoading 
+            ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2)) 
+            : Text(widget.docId == null ? 'Add' : 'Update'),
         ),
       ],
     );
