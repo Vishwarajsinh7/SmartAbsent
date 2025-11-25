@@ -1,12 +1,15 @@
-// In a new file: lib/student_report_models.dart
-
 class SubjectAttendance {
   final String name;
   final int present;
   final int absent;
-
-  // A simple calculation to get the percentage
-  int get percentage => (present * 100) ~/ (present + absent);
+  
+  int get percentage {
+    int total = present + absent;
+    if (total == 0) {
+      return 100; 
+    }
+    return (present * 100) ~/ total;
+  }
 
   const SubjectAttendance({
     required this.name,
